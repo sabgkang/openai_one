@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const { callCodex } = require('./codexClient');
-const { getNextAccount, markRateLimited, listAccounts, clearRateLimits, setPinnedAccount } = require('./accountManager');
+const { getNextAccount, releaseAccount, markRateLimited, listAccounts, clearRateLimits, setPinnedAccount } = require('./accountManager');
 
 // ── CLI 選項處理 ─────────────────────────────────────────────
 const args = process.argv.slice(2);
@@ -102,6 +102,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       account = acc;
 
       const result = await callCodex(token, req.body, res);
+      releaseAccount(account.id);
 
       if (result === null) return; // streaming 已直接 pipe
 
@@ -111,12 +112,14 @@ app.post('/v1/chat/completions', async (req, res) => {
           : null;
         markRateLimited(account.id, retryAfter);
         lastError = result;
+        account = null;
         continue;
       }
 
       return res.status(result.status).json(result.data);
 
     } catch (err) {
+      if (account) releaseAccount(account.id);
       lastError = err;
       break;
     }

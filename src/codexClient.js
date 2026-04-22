@@ -115,52 +115,55 @@ async function collectSseResponse(stream) {
 }
 
 // 將 Responses API SSE 轉為 Chat Completions SSE 格式並 pipe 到 res
+// 回傳 Promise，在 stream 結束後 resolve
 function pipeStreamResponse(stream, res, model) {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+  return new Promise((resolve) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
 
-  let buffer = '';
-  const responseId = `chatcmpl-${Date.now()}`;
+    let buffer = '';
+    const responseId = `chatcmpl-${Date.now()}`;
 
-  stream.on('data', chunk => {
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // 保留不完整的最後一行
+    stream.on('data', chunk => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const ev = JSON.parse(line.slice(6));
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const ev = JSON.parse(line.slice(6));
 
-        if (ev.type === 'response.output_text.delta' && ev.delta) {
-          const chunk = {
-            id: responseId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: model || 'gpt-5.4-mini',
-            choices: [{ index: 0, delta: { content: ev.delta }, finish_reason: null }],
-          };
-          res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        }
+          if (ev.type === 'response.output_text.delta' && ev.delta) {
+            const out = {
+              id: responseId,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: model || 'gpt-5.4-mini',
+              choices: [{ index: 0, delta: { content: ev.delta }, finish_reason: null }],
+            };
+            res.write(`data: ${JSON.stringify(out)}\n\n`);
+          }
 
-        if (ev.type === 'response.completed') {
-          const done = {
-            id: responseId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: ev.response?.model || model || 'gpt-5.4-mini',
-            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-          };
-          res.write(`data: ${JSON.stringify(done)}\n\n`);
-          res.write('data: [DONE]\n\n');
-        }
-      } catch { /* 忽略 */ }
-    }
+          if (ev.type === 'response.completed') {
+            const done = {
+              id: responseId,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: ev.response?.model || model || 'gpt-5.4-mini',
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            };
+            res.write(`data: ${JSON.stringify(done)}\n\n`);
+            res.write('data: [DONE]\n\n');
+          }
+        } catch { /* 忽略 */ }
+      }
+    });
+
+    stream.on('end', () => { res.end(); resolve(); });
+    stream.on('error', () => { res.end(); resolve(); });
   });
-
-  stream.on('end', () => res.end());
-  stream.on('error', () => res.end());
 }
 
 // 主入口：處理一個 chat completions 請求
