@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/open_ai_server.js",
     "add-account": "node scripts/add-account.js",
-    "import-account": "node scripts/import-from-codex-cli.js"
+    "import-account": "node scripts/import-from-codex-cli.js",
+    "remove-account": "node scripts/remove-account.js"
   },
   "dependencies": {
     "axios": "^1.7.9",
