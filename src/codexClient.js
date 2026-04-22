@@ -15,13 +15,16 @@ function extractAccountId(token) {
 
 // Chat Completions messages → Responses API input
 function toResponsesInput(messages) {
-  return messages.map(m => ({
-    type: 'message',
-    role: m.role,
-    content: typeof m.content === 'string'
-      ? [{ type: 'input_text', text: m.content }]
-      : m.content,
-  }));
+  return messages.map(m => {
+    const contentType = m.role === 'assistant' ? 'output_text' : 'input_text';
+    return {
+      type: 'message',
+      role: m.role,
+      content: typeof m.content === 'string'
+        ? [{ type: contentType, text: m.content }]
+        : m.content,
+    };
+  });
 }
 
 // 從 messages 中提取 system prompt 作為 instructions
