@@ -56,7 +56,32 @@ function extractTokens(raw) {
 }
 
 function main() {
-  const accountName = process.argv[2] || `imported_${Date.now()}`;
+  const arg = process.argv[2];
+
+  if (arg === '--help' || arg === '-h') {
+    console.log(`
+用法: npm run import-account -- [帳號名稱] [auth檔案路徑]
+
+說明:
+  從現有 auth 檔案匯入帳號，支援 Hermes、OpenCode、官方 Codex CLI 格式。
+  若未指定路徑，自動搜尋預設位置。
+
+選項:
+  --help, -h     顯示此說明
+
+預設搜尋路徑:
+  ~/.codex/auth.json
+  ~/.config/openai/codex/auth.json
+
+範例:
+  npm run import-account -- HDD7 ./hdd7_auth.json
+  npm run import-account -- HDD7          (自動搜尋預設路徑)
+  npm run import-account                  (自動命名 + 自動搜尋)
+`);
+    process.exit(0);
+  }
+
+  const accountName = arg || `imported_${Date.now()}`;
   const customPath  = process.argv[3] || null;
 
   let authFile = customPath

@@ -6,6 +6,29 @@ const { getNextAccount, markRateLimited, listAccounts, clearRateLimits, setPinne
 // ── CLI 選項處理 ─────────────────────────────────────────────
 const args = process.argv.slice(2);
 
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`
+用法: npm start [-- <選項>]
+      node src/open_ai_server.js [<選項>]
+
+選項:
+  --list               列出所有已設定帳號及狀態
+  --account <名稱>     強制使用指定帳號（不輪替）
+  --help, -h           顯示此說明
+
+環境變數 (.env):
+  PORT                        監聽 port（預設 3000）
+  MAX_RETRIES                 單次請求最多嘗試帳號數（預設 3）
+  DEFAULT_RATE_LIMIT_SECONDS  帳號 rate limit 封鎖秒數（預設 60）
+
+範例:
+  npm start
+  npm start -- --list
+  npm start -- --account HDD7
+`);
+  process.exit(0);
+}
+
 if (args.includes('--list')) {
   const accounts = listAccounts();
   if (accounts.length === 0) {

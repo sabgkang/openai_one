@@ -26,7 +26,27 @@ function toFormEncoded(obj) {
 }
 
 async function main() {
-  const accountName = process.argv[2] || `account_${Date.now()}`;
+  const arg = process.argv[2];
+
+  if (arg === '--help' || arg === '-h') {
+    console.log(`
+用法: npm run add-account -- [帳號名稱]
+
+說明:
+  透過 OAuth Device Flow 授權新帳號。
+  執行後會顯示授權網址，在瀏覽器完成登入即可。
+
+選項:
+  --help, -h     顯示此說明
+
+範例:
+  npm run add-account -- HDD7
+  npm run add-account            (自動產生帳號名稱)
+`);
+    process.exit(0);
+  }
+
+  const accountName = arg || `account_${Date.now()}`;
   console.log(`\n新增帳號: "${accountName}"`);
 
   let deviceData;

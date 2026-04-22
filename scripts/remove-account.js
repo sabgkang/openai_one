@@ -2,10 +2,20 @@ const { loadAccounts, saveAccounts } = require('../src/tokenManager');
 
 const name = process.argv[2];
 
-if (!name) {
-  console.error('用法: npm run remove-account -- <帳號名稱>');
-  console.error('      npm run remove-account -- --list  (列出所有帳號)');
-  process.exit(1);
+if (!name || name === '--help' || name === '-h') {
+  console.log(`
+用法: npm run remove-account -- <帳號名稱>
+      npm run remove-account -- --list
+
+選項:
+  --list         列出所有已設定帳號
+  --help, -h     顯示此說明
+
+範例:
+  npm run remove-account -- HDD7
+  npm run remove-account -- --list
+`);
+  process.exit(name ? 0 : 1);
 }
 
 const accounts = loadAccounts();
