@@ -205,9 +205,7 @@ async function callCodex(token, chatBody, res) {
     stream: true, // 端點強制要求 stream:true
     instructions: extractInstructions(messages.filter(m => m.role !== 'system')),
     input: toResponsesInput(messages.filter(m => m.role !== 'system')),
-    reasoning: {},
     text: { verbosity: 'medium' },
-    include: ['reasoning.encrypted_content'],
   };
 
   // 如果有 system message，用它當 instructions
