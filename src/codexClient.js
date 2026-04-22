@@ -18,14 +18,12 @@ function toResponsesInput(messages) {
   const result = [];
   for (const m of messages) {
     if (m.role === 'tool') {
-      // 工具呼叫結果
       result.push({
         type: 'function_call_output',
         call_id: m.tool_call_id,
         output: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
       });
     } else if (m.role === 'assistant' && m.tool_calls?.length) {
-      // Assistant 發出工具呼叫（可能同時有文字內容）
       if (m.content) {
         result.push({
           type: 'message',
@@ -55,14 +53,18 @@ function toResponsesInput(messages) {
   return result;
 }
 
-// 從 messages 中提取 system prompt 作為 instructions
-function extractInstructions(messages) {
-  const sys = messages.find(m => m.role === 'system');
-  return sys?.content || 'You are a helpful assistant.';
+// Chat Completions tools → Responses API tools
+function toResponsesTools(tools) {
+  if (!tools?.length) return undefined;
+  return tools.map(t => ({
+    type: 'function',
+    name: t.function.name,
+    description: t.function.description,
+    parameters: t.function.parameters,
+  }));
 }
 
 // 發送請求到 chatgpt.com/backend-api/codex/responses
-// 回傳 Node.js IncomingMessage（SSE stream）
 function requestCodex(token, body) {
   return new Promise((resolve, reject) => {
     const accountId = extractAccountId(token);
@@ -89,7 +91,7 @@ function requestCodex(token, body) {
   });
 }
 
-// 解析 SSE 事件流，收集所有 text delta，組成 chat completion 回應
+// 解析 SSE 事件流，組成 chat completion 回應（含工具呼叫）
 async function collectSseResponse(stream) {
   return new Promise((resolve, reject) => {
     let buffer = '';
@@ -97,12 +99,11 @@ async function collectSseResponse(stream) {
     let responseId = null;
     let model = null;
     let usage = null;
-    let finishReason = 'stop';
+    const toolCallsMap = {}; // item_id → {call_id, name, arguments}
 
     stream.on('data', chunk => { buffer += chunk.toString(); });
     stream.on('error', reject);
     stream.on('end', () => {
-      // 解析所有 SSE 行
       for (const line of buffer.split('\n')) {
         if (!line.startsWith('data: ')) continue;
         try {
@@ -115,12 +116,32 @@ async function collectSseResponse(stream) {
           if (ev.type === 'response.output_text.delta') {
             text += ev.delta || '';
           }
+          if (ev.type === 'response.output_item.added' && ev.item?.type === 'function_call') {
+            toolCallsMap[ev.item.id] = { call_id: ev.item.call_id, name: ev.item.name, arguments: '' };
+          }
+          if (ev.type === 'response.function_call_arguments.delta' && toolCallsMap[ev.item_id]) {
+            toolCallsMap[ev.item_id].arguments += ev.delta || '';
+          }
           if (ev.type === 'response.completed') {
             usage = ev.response?.usage || null;
             model = ev.response?.model || model;
+            // response.output が一番確実なソース
+            for (const item of ev.response?.output || []) {
+              if (item.type === 'function_call') {
+                toolCallsMap[item.id] = { call_id: item.call_id, name: item.name, arguments: item.arguments || '' };
+              }
+              if (item.type === 'message') {
+                for (const c of item.content || []) {
+                  if (c.type === 'output_text' && c.text) text = c.text;
+                }
+              }
+            }
           }
         } catch { /* 忽略解析失敗的行 */ }
       }
+
+      const toolCallsList = Object.values(toolCallsMap);
+      const hasToolCalls = toolCallsList.length > 0;
 
       resolve({
         id: responseId || `chatcmpl-${Date.now()}`,
@@ -129,8 +150,18 @@ async function collectSseResponse(stream) {
         model: model || 'gpt-5.4-mini',
         choices: [{
           index: 0,
-          message: { role: 'assistant', content: text },
-          finish_reason: finishReason,
+          message: {
+            role: 'assistant',
+            content: hasToolCalls ? null : text,
+            ...(hasToolCalls && {
+              tool_calls: toolCallsList.map((tc, i) => ({
+                id: tc.call_id,
+                type: 'function',
+                function: { name: tc.name, arguments: tc.arguments },
+              })),
+            }),
+          },
+          finish_reason: hasToolCalls ? 'tool_calls' : 'stop',
         }],
         usage: usage ? {
           prompt_tokens: usage.input_tokens || 0,
@@ -142,8 +173,7 @@ async function collectSseResponse(stream) {
   });
 }
 
-// 將 Responses API SSE 轉為 Chat Completions SSE 格式並 pipe 到 res
-// 回傳 Promise，在 stream 結束後 resolve
+// 將 Responses API SSE 轉為 Chat Completions SSE 格式並 pipe 到 res（含工具呼叫）
 function pipeStreamResponse(stream, res, model) {
   return new Promise((resolve) => {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -152,9 +182,19 @@ function pipeStreamResponse(stream, res, model) {
 
     let buffer = '';
     const responseId = `chatcmpl-${Date.now()}`;
+    const toolCallIndexMap = {}; // item_id → index
 
-    stream.on('data', chunk => {
-      buffer += chunk.toString();
+    const write = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    const chunk = (delta, finishReason, evModel) => ({
+      id: responseId,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: evModel || model || 'gpt-5.4-mini',
+      choices: [{ index: 0, delta, finish_reason: finishReason ?? null }],
+    });
+
+    stream.on('data', data => {
+      buffer += data.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
 
@@ -164,25 +204,25 @@ function pipeStreamResponse(stream, res, model) {
           const ev = JSON.parse(line.slice(6));
 
           if (ev.type === 'response.output_text.delta' && ev.delta) {
-            const out = {
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: model || 'gpt-5.4-mini',
-              choices: [{ index: 0, delta: { content: ev.delta }, finish_reason: null }],
-            };
-            res.write(`data: ${JSON.stringify(out)}\n\n`);
+            write(chunk({ content: ev.delta }));
+          }
+
+          if (ev.type === 'response.output_item.added' && ev.item?.type === 'function_call') {
+            const idx = Object.keys(toolCallIndexMap).length;
+            toolCallIndexMap[ev.item.id] = idx;
+            write(chunk({ tool_calls: [{ index: idx, id: ev.item.call_id, type: 'function', function: { name: ev.item.name, arguments: '' } }] }));
+          }
+
+          if (ev.type === 'response.function_call_arguments.delta' && ev.delta) {
+            const idx = toolCallIndexMap[ev.item_id];
+            if (idx !== undefined) {
+              write(chunk({ tool_calls: [{ index: idx, function: { arguments: ev.delta } }] }));
+            }
           }
 
           if (ev.type === 'response.completed') {
-            const done = {
-              id: responseId,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: ev.response?.model || model || 'gpt-5.4-mini',
-              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-            };
-            res.write(`data: ${JSON.stringify(done)}\n\n`);
+            const hasToolCalls = Object.keys(toolCallIndexMap).length > 0;
+            write(chunk({}, hasToolCalls ? 'tool_calls' : 'stop', ev.response?.model));
             res.write('data: [DONE]\n\n');
           }
         } catch { /* 忽略 */ }
@@ -198,21 +238,20 @@ function pipeStreamResponse(stream, res, model) {
 async function callCodex(token, chatBody, res) {
   const messages = chatBody.messages || [];
   const isStream = chatBody.stream === true;
+  const sys = messages.find(m => m.role === 'system');
 
   const codexBody = {
     model: chatBody.model || 'gpt-5.4-mini',
     store: false,
-    stream: true, // 端點強制要求 stream:true
-    instructions: extractInstructions(messages.filter(m => m.role !== 'system')),
+    stream: true,
+    instructions: sys?.content || 'You are a helpful assistant.',
     input: toResponsesInput(messages.filter(m => m.role !== 'system')),
     text: { verbosity: 'medium' },
   };
 
-  // 如果有 system message，用它當 instructions
-  const sys = messages.find(m => m.role === 'system');
-  if (sys) codexBody.instructions = sys.content;
-  // input 不含 system
-  codexBody.input = toResponsesInput(messages.filter(m => m.role !== 'system'));
+  const tools = toResponsesTools(chatBody.tools);
+  if (tools) codexBody.tools = tools;
+  if (chatBody.tool_choice) codexBody.tool_choice = chatBody.tool_choice;
 
   const stream = await requestCodex(token, codexBody);
 
@@ -224,8 +263,8 @@ async function callCodex(token, chatBody, res) {
   }
 
   if (isStream) {
-    pipeStreamResponse(stream, res, codexBody.model);
-    return null; // 已直接 pipe，不需要再回應
+    await pipeStreamResponse(stream, res, codexBody.model);
+    return null;
   } else {
     const result = await collectSseResponse(stream);
     return { status: 200, data: result };
