@@ -4,6 +4,7 @@ const rateLimitedUntil = new Map();
 const busyAccounts = new Set();   // 目前正在處理請求的帳號 id
 const waitQueue = [];              // 等待可用帳號的 Promise resolve
 let pinnedAccountName = null;     // --account <name> 設定的強制帳號
+let activeAccountId = null;       // 目前使用的帳號，rate limited 才切下一個
 
 function setPinnedAccount(name) {
   pinnedAccountName = name;
@@ -22,8 +23,19 @@ function isRateLimited(accountId) {
 function markRateLimited(accountId, retryAfterSeconds) {
   const seconds = retryAfterSeconds || parseInt(process.env.DEFAULT_RATE_LIMIT_SECONDS || '60');
   rateLimitedUntil.set(accountId, Date.now() + seconds * 1000);
-  const name = loadAccounts().find(a => a.id === accountId)?.name || accountId;
+  const accounts = loadAccounts();
+  const name = accounts.find(a => a.id === accountId)?.name || accountId;
   console.log(`[AccountManager] 帳號 "${name}" rate limited，${seconds}s 後解除`);
+
+  // 若目前使用的帳號被 rate limited，切換到下一個可用帳號
+  if (activeAccountId === accountId) {
+    const next = accounts.find(a => a.id !== accountId && !isRateLimited(a.id));
+    activeAccountId = next?.id || null;
+    if (next) console.log(`[AccountManager] 切換至帳號: "${next.name}"`);
+    else console.log('[AccountManager] 所有帳號均 rate limited');
+    // 喚醒等待中的請求，讓它們重新判斷
+    while (waitQueue.length > 0) waitQueue.shift()();
+  }
 }
 
 async function getNextAccount() {
@@ -57,31 +69,33 @@ async function getNextAccount() {
       continue;
     }
 
-    // round-robin：從未 rate limited 且未忙碌的帳號中選最久未使用的
-    const available = accounts.filter(a => !isRateLimited(a.id) && !busyAccounts.has(a.id));
-
-    if (available.length > 0) {
-      available.sort((a, b) => (a.lastUsed || 0) - (b.lastUsed || 0));
-      const chosen = available[0];
-      busyAccounts.add(chosen.id);
-      const all = loadAccounts();
-      const idx = all.findIndex(a => a.id === chosen.id);
-      all[idx].lastUsed = Date.now();
-      saveAccounts(all);
-      const token = await getValidToken(chosen.id);
-      console.log(`[AccountManager] 使用帳號: "${chosen.name}"`);
-      return { account: chosen, token };
+    // 初始化：選第一個未 rate limited 的帳號
+    if (!activeAccountId || isRateLimited(activeAccountId)) {
+      const first = accounts.find(a => !isRateLimited(a.id));
+      if (!first) {
+        const nextUnlock = Math.min(...accounts.map(a => rateLimitedUntil.get(a.id) || Infinity));
+        const waitSec = Math.ceil((nextUnlock - Date.now()) / 1000);
+        throw new Error(`所有帳號都在 rate limit 中，最快 ${waitSec}s 後恢復`);
+      }
+      activeAccountId = first.id;
     }
 
-    // 所有未 rate limited 的帳號都忙碌中，等待釋放
-    const notRateLimited = accounts.filter(a => !isRateLimited(a.id));
-    if (notRateLimited.length === 0) {
-      const nextUnlock = Math.min(...accounts.map(a => rateLimitedUntil.get(a.id) || Infinity));
-      const waitSec = Math.ceil((nextUnlock - Date.now()) / 1000);
-      throw new Error(`所有帳號都在 rate limit 中，最快 ${waitSec}s 後恢復`);
+    const active = accounts.find(a => a.id === activeAccountId);
+
+    // active 帳號忙碌時排隊等待
+    if (busyAccounts.has(active.id)) {
+      await new Promise(resolve => waitQueue.push(resolve));
+      continue;
     }
 
-    await new Promise(resolve => waitQueue.push(resolve));
+    busyAccounts.add(active.id);
+    const all = loadAccounts();
+    const idx = all.findIndex(a => a.id === active.id);
+    all[idx].lastUsed = Date.now();
+    saveAccounts(all);
+    const token = await getValidToken(active.id);
+    console.log(`[AccountManager] 使用帳號: "${active.name}"`);
+    return { account: active, token };
   }
 }
 
