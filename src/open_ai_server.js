@@ -71,6 +71,27 @@ if (accountArg !== -1) {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
+const LOG_PASSWORD = process.env.LOG_PASSWORD || '';
+
+// ── Log 攔截 ─────────────────────────────────────────────────
+const LOG_BUFFER_SIZE = 500;
+const logBuffer = [];        // { ts, level, msg }
+const logClients = new Set(); // SSE 連線
+
+function pushLog(level, args) {
+  const msg = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  const entry = { ts: new Date().toISOString(), level, msg };
+  logBuffer.push(entry);
+  if (logBuffer.length > LOG_BUFFER_SIZE) logBuffer.shift();
+  const line = `data: ${JSON.stringify(entry)}\n\n`;
+  for (const client of logClients) client.write(line);
+}
+
+const _log   = console.log.bind(console);
+const _error = console.error.bind(console);
+console.log   = (...a) => { _log(...a);   pushLog('log',   a); };
+console.error = (...a) => { _error(...a); pushLog('error', a); };
+// ─────────────────────────────────────────────────────────────
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -85,6 +106,75 @@ app.use((err, req, res, next) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', accounts: listAccounts() });
 });
+
+// ── Log 頁面 ─────────────────────────────────────────────────
+function checkLogAuth(req, res) {
+  if (!LOG_PASSWORD) return true;
+  const auth = req.headers.authorization || '';
+  const b64 = auth.startsWith('Basic ') ? Buffer.from(auth.slice(6), 'base64').toString() : '';
+  if (b64 === `:${LOG_PASSWORD}`) return true;
+  res.set('WWW-Authenticate', 'Basic realm="Gateway Logs"');
+  res.status(401).send('Unauthorized');
+  return false;
+}
+
+app.get('/logs', (req, res) => {
+  if (!checkLogAuth(req, res)) return;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>Gateway Logs</title>
+<style>
+  body { background:#1e1e1e; color:#d4d4d4; font:13px/1.5 monospace; margin:0; padding:12px; }
+  #log { white-space:pre-wrap; word-break:break-all; }
+  .error { color:#f48771; }
+  .ts { color:#888; }
+  #status { position:fixed; top:8px; right:12px; font-size:11px; color:#888; }
+  #clear { position:fixed; top:4px; left:12px; cursor:pointer; background:#333; border:1px solid #555; color:#ccc; padding:2px 8px; border-radius:3px; }
+</style>
+</head>
+<body>
+<button id="clear" onclick="document.getElementById('log').textContent=''">Clear</button>
+<div id="status">connecting…</div>
+<div id="log"></div>
+<script>
+const logEl = document.getElementById('log');
+const status = document.getElementById('status');
+let autoScroll = true;
+window.addEventListener('scroll', () => {
+  autoScroll = window.innerHeight + window.scrollY >= document.body.scrollHeight - 50;
+});
+const es = new EventSource('/logs/stream');
+es.onopen = () => status.textContent = 'connected';
+es.onerror = () => status.textContent = 'disconnected — retrying…';
+es.onmessage = e => {
+  const { ts, level, msg } = JSON.parse(e.data);
+  const line = document.createElement('span');
+  if (level === 'error') line.className = 'error';
+  line.innerHTML = '<span class="ts">' + ts.replace('T',' ').slice(0,19) + '</span>  ' + msg.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '\\n';
+  logEl.appendChild(line);
+  if (autoScroll) window.scrollTo(0, document.body.scrollHeight);
+};
+</script>
+</body>
+</html>`);
+});
+
+app.get('/logs/stream', (req, res) => {
+  if (!checkLogAuth(req, res)) return;
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // 先把 buffer 裡的歷史 log 送出去
+  for (const entry of logBuffer) res.write(`data: ${JSON.stringify(entry)}\n\n`);
+
+  logClients.add(res);
+  req.on('close', () => logClients.delete(res));
+});
+// ─────────────────────────────────────────────────────────────
 
 app.post('/debug/clear-rate-limits', (req, res) => {
   clearRateLimits();
