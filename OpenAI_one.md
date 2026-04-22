@@ -72,9 +72,17 @@ MAX\_RETRIES=3                    # 單次請求最多嘗試幾個帳號
 > Hermes 只有一個 auth.json，當登入另外一個帳號並取得授權後，就會把原先舊的蓋掉。
 
 copy ~/.hermers/auth.json ./hdd7\_auth.json  
-npm run import-account "HDD7" ./hdd7\_auth.json
+npm run import-account -- “HDD7” ./hdd7\_auth.json
 
 > “HDD7” 為任意自取，不必跟 OpenAI 帳號一樣。
+
+## **移除帳號**
+
+npm run remove-account -- \<帳號名稱\>
+
+列出所有帳號（確認名稱）：
+
+npm run remove-account -- --list
 
 ## **啟動伺服器**
 
@@ -85,14 +93,14 @@ npm run import-account "HDD7" ./hdd7\_auth.json
 [](https://github.com/sabgkang/openai_one/blob/master/OpenAI_one.md#%E4%B8%80%E8%88%AC%E5%95%9F%E5%8B%95%E8%87%AA%E5%8B%95%E8%BC%AA%E6%9B%BF%E6%89%80%E6%9C%89%E5%B8%B3%E8%99%9F)
 
 npm start or  
-node src\\server.js
+node src\\open_ai_server.js
 
 ### **查看所有帳號狀態**
 
 [](https://github.com/sabgkang/openai_one/blob/master/OpenAI_one.md#%E6%9F%A5%E7%9C%8B%E6%89%80%E6%9C%89%E5%B8%B3%E8%99%9F%E7%8B%80%E6%85%8B)
 
 npm start -- --list or  
-node src\\server.js --list
+node src\\open_ai_server.js --list
 
 輸出範例：
 
@@ -112,7 +120,7 @@ node src\\server.js --list
 [](https://github.com/sabgkang/openai_one/blob/master/OpenAI_one.md#%E5%BC%B7%E5%88%B6%E4%BD%BF%E7%94%A8%E6%8C%87%E5%AE%9A%E5%B8%B3%E8%99%9F)
 
 npm start -- --account hdd7 or  
-node src\\server.js
+node src\\open_ai_server.js
 
 指定的帳號名稱必須與匯入時使用的名稱完全相符。若帳號不存在，伺服器會在啟動時立即報錯並列出現有帳號。
 
@@ -126,7 +134,7 @@ node src\\server.js
 
 [](https://github.com/sabgkang/openai_one/blob/master/OpenAI_one.md#curlwsl--linux--macos)
 
-curl http://localhost:3000/v1/chat/completions \\
+curl -X POST http://localhost:3000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{"model":"gpt-5.4-mini","messages":\[{"role":"user","content":"Hello"}\]}'
 
@@ -168,7 +176,7 @@ console.log(response.choices\[0\].message.content);
 
 [](https://github.com/sabgkang/openai_one/blob/master/OpenAI_one.md#streaming)
 
-curl http://localhost:3000/v1/chat/completions \\
+curl -X POST http://localhost:3000/v1/chat/completions \\
   -H "Content-Type: application/json" \\
   -d '{"model":"gpt-5.4-mini","messages":\[{"role":"user","content":"Hello"}\],"stream":true}'
 
