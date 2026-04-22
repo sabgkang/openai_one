@@ -15,16 +15,44 @@ function extractAccountId(token) {
 
 // Chat Completions messages → Responses API input
 function toResponsesInput(messages) {
-  return messages.map(m => {
-    const contentType = m.role === 'assistant' ? 'output_text' : 'input_text';
-    return {
-      type: 'message',
-      role: m.role,
-      content: typeof m.content === 'string'
-        ? [{ type: contentType, text: m.content }]
-        : m.content,
-    };
-  });
+  const result = [];
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      // 工具呼叫結果
+      result.push({
+        type: 'function_call_output',
+        call_id: m.tool_call_id,
+        output: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+      });
+    } else if (m.role === 'assistant' && m.tool_calls?.length) {
+      // Assistant 發出工具呼叫（可能同時有文字內容）
+      if (m.content) {
+        result.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }],
+        });
+      }
+      for (const tc of m.tool_calls) {
+        result.push({
+          type: 'function_call',
+          call_id: tc.id,
+          name: tc.function.name,
+          arguments: tc.function.arguments,
+        });
+      }
+    } else {
+      const contentType = m.role === 'assistant' ? 'output_text' : 'input_text';
+      result.push({
+        type: 'message',
+        role: m.role,
+        content: typeof m.content === 'string'
+          ? [{ type: contentType, text: m.content }]
+          : m.content,
+      });
+    }
+  }
+  return result;
 }
 
 // 從 messages 中提取 system prompt 作為 instructions
